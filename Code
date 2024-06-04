@@ -1,0 +1,123 @@
+function Get-RandomJingle {
+    $jingleDirectory = "C:\Users\X\Desktop\Powershell Projekt Jingle"
+    $jingles = Get-ChildItem -Path $jingleDirectory -Filter *.wav | Select-Object -ExpandProperty FullName
+    return Get-Random -InputObject $jingles
+}
+
+function Play-Jingle {
+    param (
+        [string]$jingle
+    )
+    Write-Host "Spielt Jingle ab: $jingle"
+    Add-Type -TypeDefinition @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class SoundPlayer {
+            [DllImport("winmm.dll")]
+            public static extern bool PlaySound(string lpszName, IntPtr hModule, int dwFlags);
+        }
+"@
+    [SoundPlayer]::PlaySound($jingle, [IntPtr]::Zero, 0x0001)
+}
+
+function Update-LogFile {
+    param (
+        [string]$logFile,
+        [string]$date,
+        [int]$playCount
+    )
+    if (-Not (Test-Path $logFile)) {
+        New-Item -ItemType File -Path $logFile -Force
+    }
+
+    $logData = @{}
+    if (Test-Path $logFile) {
+        $logData = Import-Csv -Path $logFile -Delimiter ";"
+    }
+
+    $existingEntry = $logData | Where-Object { $_.Date -eq $date }
+
+    if ($existingEntry) {
+        $existingEntry.PlayCount = $playCount
+    } else {
+        $logData += [pscustomobject]@{ Date = $date; PlayCount = $playCount }
+    }
+
+    $logData | Export-Csv -Path $logFile -Delimiter ";" -NoTypeInformation
+}
+
+function Get-PlayCount {
+    param (
+        [string]$logFile,
+        [string]$date
+    )
+    if (Test-Path $logFile) {
+        $logData = Import-Csv -Path $logFile -Delimiter ";"
+        $entry = $logData | Where-Object { $_.Date -eq $date }
+        if ($entry) {
+            return [int]$entry.PlayCount
+        }
+    }
+    return 0
+}
+
+function Get-WeeklyPlayCount {
+    param (
+        [string]$logFile
+    )
+    if (Test-Path $logFile) {
+        $logData = Import-Csv -Path $logFile -Delimiter ";"
+        $currentWeek = (Get-Date).Date.AddDays(-(Get-Date).DayOfWeek.value__).AddDays(1)
+        $weeklyPlayCount = $logData | Where-Object {
+            [datetime]::Parse($_.Date) -ge $currentWeek
+        } | Measure-Object -Property PlayCount -Sum
+        return $weeklyPlayCount.Sum
+    }
+    return 0
+}
+
+$logFile = "C:\Users\X\Desktop\Powershell Projekt Jingle\jingle_log.csv"
+while ($true) {
+    $currentDate = (Get-Date).ToString("yyyy-MM-dd")
+    $currentHour = (Get-Date).Hour
+    $currentMinute = (Get-Date).Minute
+    $currentDay = (Get-Date).DayOfWeek
+
+    $isPauseTime = (($currentHour -eq 9 -and $currentMinute -ge 10) -or ($currentHour -eq 9 -and $currentMinute -lt 40) -or
+                    ($currentHour -eq 12 -and $currentMinute -ge 0) -or ($currentHour -eq 12 -and $currentMinute -lt 30))
+
+    if (($currentDay -ge [DayOfWeek]::Monday) -and ($currentDay -le [DayOfWeek]::Friday) -and ($currentHour -ge 8) -and ($currentHour -lt 14) -and -not $isPauseTime) {
+        $previousDate = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd")
+        $previousPlayCount = Get-PlayCount -logFile $logFile -date $previousDate
+        $weeklyPlayCount = Get-WeeklyPlayCount -logFile $logFile
+
+        #Maximale Anzahl pro Tag
+        $maxPlaysToday = 3
+        if ($previousPlayCount -eq 2 -or $weeklyPlayCount -ge 2) {
+            $maxPlaysToday = Get-Random -Minimum 1 -Maximum 2
+        }
+
+        $playCountToday = Get-PlayCount -logFile $logFile -date $currentDate
+
+        if ($playCountToday -lt $maxPlaysToday) {
+            $jingle = Get-RandomJingle
+            Play-Jingle -jingle $jingle
+            $playCountToday++
+            Update-LogFile -logFile $logFile -date $currentDate -playCount $playCountToday
+            Start-Sleep -Seconds (Get-Random -Minimum 4200 -Maximum 7800)
+        } else {
+            Write-Host "Maximale Wiedergabeanzahl für heute erreicht."
+            Start-Sleep -Seconds 3600 # Warte eine Stunde, bevor erneut geprüft wird
+        }
+    } else {
+        $nextStartTime = [datetime]::Today.AddDays((6 - [int](Get-Date).DayOfWeek) % 7 + 1).AddHours(8)
+        if ((Get-Date).Hour -lt 8) {
+            $nextStartTime = (Get-Date).Date.AddHours(8)
+        } elseif ((Get-Date).DayOfWeek -ge [DayOfWeek]::Monday -and (Get-Date).DayOfWeek -le [DayOfWeek]::Friday -and (Get-Date).Hour -ge 14) {
+            $nextStartTime = (Get-Date).Date.AddDays(1).AddHours(8)
+        }
+        $waitTime = $nextStartTime - (Get-Date)
+        Write-Host "Warte bis $nextStartTime..."
+        Start-Sleep -Seconds $waitTime.TotalSeconds
+    }
+}
